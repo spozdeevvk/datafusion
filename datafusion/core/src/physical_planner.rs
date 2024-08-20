@@ -1996,7 +1996,7 @@ mod tests {
     use crate::execution::session_state::SessionStateBuilder;
     use arrow::array::{ArrayRef, DictionaryArray, Int32Array};
     use arrow::datatypes::{DataType, Field, Int32Type};
-    use datafusion_common::{assert_contains, DFSchemaRef, TableReference};
+    use datafusion_common::{assert_contains, DFSchemaRef, ParamValues, TableReference};
     use datafusion_execution::runtime_env::RuntimeEnv;
     use datafusion_execution::TaskContext;
     use datafusion_expr::{col, lit, LogicalPlanBuilder, UserDefinedLogicalNodeCore};
@@ -2738,5 +2738,50 @@ digraph {
         );
 
         assert_contains!(generated_graph, expected_tooltip);
+    }
+
+    #[tokio::test]
+    async fn test_parametrized_filter_where_query() -> Result<()> {
+        
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Int32, false),
+            Field::new("b", DataType::Int32, false),
+            Field::new("c", DataType::Int32, false),
+            Field::new("d", DataType::Int32, true),
+        ]));
+
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3])),
+                Arc::new(Int32Array::from(vec![4, 5, 6])),
+                Arc::new(Int32Array::from(vec![7, 8, 9])),
+                Arc::new(Int32Array::from(vec![None, None, Some(9)])),
+            ],
+        )?;
+
+        let table1 = MemTable::try_new(schema, vec![vec![batch]])?;
+
+        let cfg = SessionConfig::new()
+            .set("datafusion.sql_parser.dialect", "PostgreSQL".into());
+
+        let ctx = SessionContext::new_with_config(cfg);
+
+        ctx.register_table("table1", Arc::new(table1))?;
+
+        let dataframe = ctx.sql(
+            "select count (a) filter (where b > $1) from table1"
+            ).await?
+            .with_param_values(ParamValues::List(vec![ScalarValue::from(5i32)]));
+
+        // fails here on physical planning:
+        let result = dataframe?.collect().await.unwrap();
+
+        let record_batch = result.first().unwrap();
+
+        dbg!(record_batch.columns());
+
+
+        Ok(())
     }
 }
